@@ -33,6 +33,7 @@ QUEUE = REVIEW / "queue.jsonl"
 STAGES = ["script", "record", "scenes", "frames", "clips", "final", "publish"]
 PUBLISH = HERE / "publish"
 SEEDANCE_PER_S = 0.052  # 720p, RunPod docs 2026-11
+POD_PER_HR, POD_S_PER_CLIP = 0.59, 120  # 48 GB card (A40 secure, 2026-11 read); Wan 4-step at 720p, estimate
 
 
 @contextmanager
@@ -94,8 +95,14 @@ def state() -> dict:
                       "media": {"start": mtime(HERE / "frames" / f"{i}_start.png"),
                                 "end": mtime(HERE / "frames" / f"{i}_end.png"),
                                 "clip": mtime(HERE / "clips" / f"{i}.mp4")}})
-    secs = sum(min(12, max(4, -(-(s["end"] - s["start"]) // 1))) for s in sb["shots"]
-               if not (HERE / "clips" / f"{s['id']}.mp4").exists())
+    todo = [s for s in sb["shots"] if not (HERE / "clips" / f"{s['id']}.mp4").exists()]
+    secs = sum(min(12, max(4, -(-(s["end"] - s["start"]) // 1))) for s in todo)
+    cfg = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
+    if cfg.get("clipEngine", "wan") == "wan":
+        mins = len(todo) * POD_S_PER_CLIP / 60
+        clip_cost = f"≈ {mins:.0f} min of pod, ${mins / 60 * POD_PER_HR:.2f}"
+    else:
+        clip_cost = f"≈ ${secs * SEEDANCE_PER_S:.2f}"
     out = {k: mtime(HERE / "out" / f"{k}.mp4") for k in ("hook", "main", "final", "final.loudnorm")}
     meta = json.loads((PUBLISH / "meta.json").read_text()) if (PUBLISH / "meta.json").exists() else {}
     thumbs = [{"name": f.name, "v": mtime(f)} for f in sorted(PUBLISH.glob("thumb_*.png"))] if PUBLISH.exists() else []
@@ -109,7 +116,7 @@ def state() -> dict:
                        "raw": (HERE / "raw.md").read_text() if (HERE / "raw.md").exists() else ""},
             "record": {**st.get("record", {}), "file": rec.name if rec else None,
                        "mb": round(rec.stat().st_size / 1e6, 1) if rec else None},
-            "clipEstimate": round(secs * SEEDANCE_PER_S, 2), "out": out,
+            "clipEstimate": clip_cost, "out": out,
             "publish": {**st.get("publish", {}), "meta": meta, "thumbs": thumbs, "exports": exports}}
 
 
@@ -371,7 +378,7 @@ function render(){document.getElementById("title").textContent=S.title;
  const a=S.shots.filter(s=>s[view].status==="approved").length,p=S.shots.filter(s=>s[view].status==="pending").length;
  document.getElementById("count").textContent=`${a}/${S.shots.length} approved${p?` · ${p} working`:""}`;
  btn.style.display=view===S.stage?"":"none";
- const nxt=ORDER[cur+1], cost=view==="frames"?` · clips ≈ $${S.clipEstimate}`:"";
+ const nxt=ORDER[cur+1], cost=view==="frames"?` · clips ${S.clipEstimate}`:"";
  btn.textContent=p?`Wait: ${p} working`:`Approve all → ${NAMES[nxt]}${cost}`; btn.disabled=p>0;
  btn.onclick=()=>post({stage:view,action:"approve-stage"});
  const ta=document.activeElement&&document.activeElement.dataset?document.activeElement.dataset.k:null;
@@ -495,10 +502,11 @@ def main() -> None:
         if dest.exists():
             sys.exit(f"{dest} already exists")
         dest.mkdir(parents=True)
-        for f in tpl.glob("*.py"):
+        for f in list(tpl.glob("*.py")) + list(tpl.glob("*.sh")):
             shutil.copy(f, dest)
-        (dest / "config.json").write_text(json.dumps({"cloud": "runpod", "startModel": "seedream",
-                                                      "endModel": "qwen-edit"}, indent=2) + "\n")
+        # frames and clips on the project's GPU pod; "seedream"/"qwen-edit"/"seedance" switch back to the APIs
+        (dest / "config.json").write_text(json.dumps({"cloud": "runpod", "startModel": "pod", "endModel": "pod",
+                                                      "clipEngine": "wan", "clipSize": "720p"}, indent=2) + "\n")
         print(dest)
     elif cmd in ("done", "fail", "review"):
         stage, ids = args[1], args[2:]

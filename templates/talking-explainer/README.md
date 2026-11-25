@@ -21,19 +21,22 @@ that costs money runs until the presenter has approved what it will make.
 | 3 | Transcribe, split into hook / main / CTA | agent | whisper `turbo`, local | free |
 | 4 | **Scene list**: one line per shot (time, the words, what we see at the start, what changes by the end, the motion) | agent, or the presenter writes any scene | `storyboard.json` | free |
 | 5 | **Gate 1: approve the scenes** in the studio (✅ or a note + Regenerate per scene) | presenter | `studio.py` | |
-| 6 | Start and end frames; the agent looks at every end frame and redoes broken edits | agent | `frames.py`: Seedream 4.0 + Qwen Image Edit 2511 | ~$0.05 a shot |
+| 6 | Start the pod (README "Pod"), then start and end frames; the agent looks at every end frame and redoes broken edits | agent | `frames.py`: Qwen-Image + Qwen-Image-Edit on the pod | pod time |
 | 7 | **Gate 2: approve the frames** (`storyboard.html`; redo one with `frames.py --only M03`) | presenter | | |
-| 8 | Hook clip, then the hook preview with captions | agent | `clips.py --only H1`, `build.py --hook` | ~$0.40 |
+| 8 | Hook clip, then the hook preview | agent | `clips.py --only H1`, `build.py --hook` | pod time |
 | 9 | **Gate 3: approve the hook** (the look and motion, before the main clips are paid for) | presenter | | |
-| 10 | Main clips | agent | `clips.py`: Seedance 1.5 Pro I2V 720p | $0.052 a second |
+| 10 | Main clips, then **terminate the pod** | agent | `clips.py`: Wan 2.2 first-last-frame on the pod | pod time |
 | 11 | Build and QC: `hook.mp4`, `main.mp4`, `final.mp4`, loudness to -14 LUFS | agent | `build.py`, `tools/qc.py --render … --fix` | free |
 | 12 | **Gate 4: approve the final video** (④ Final in the studio) | presenter | | |
 | 13 | Publish kit: 2-3 cover thumbnails, title, caption, SEO keywords, hashtags | agent | `publish.py thumbs`, `publish/meta.json` | free |
 | 14 | **Gate 5: pick a thumbnail, edit the text or leave a note** (⑤ Publish) | presenter | | |
 | 15 | Export → `exports/<project>/`: the video with the cover embedded, hook and main, `thumbnail.png`, `caption.txt`, `tags.txt` | agent | `publish.py export` | free |
 
-A 70 s video with about 12 shots costs roughly $0.60 in frames and $3 to $4 in clips at 720p
-(half that at 480p). Check the RunPod balance before step 10.
+Frames and clips run on one GPU pod that the agent starts before the frames and terminates after the
+clips. Expected: about an hour of a 48 GB card (~$0.59/hr): ~10 min of model download, ~10 min of frames,
+~35 min of clips, plus the time the presenter spends reviewing while it runs. That is under $1 a video,
+against ~$5 on the APIs (Seedream + Qwen Edit + Seedance, measured 2026-11-25), which stay available in
+`config.json`. **Not yet run end to end on a live pod:** the first video on it is also its test.
 
 ## Starting a video
 
@@ -126,19 +129,45 @@ Z-Image Turbo flat (with gibberish text in the picture), and Qwen Edit changed o
   slider with a speaker icon, eighty percent filled", or it draws an equaliser.
 - Sizes: hook 864x768 (the 1080x960 top half), main 864x1536.
 
+## Pod (default for frames and clips)
+
+One RunPod GPU pod runs ComfyUI with three models: Qwen-Image (start frames), Qwen-Image-Edit (end
+frames) and Wan 2.2 14B first-last-frame (clips). The workflows are in `comfy.py`; the page and the
+scripts call no model API. The agent drives the pod with the RunPod MCP tools:
+
+1. **When:** the presenter approves the scenes (① → ②). Read GPU stock first.
+2. **Card:** 48 GB (A40, L40S, RTX 6000 Ada, RTX A6000), cheapest in stock. Qwen-Image is 20 GB of
+   weights, so a 24 GB card works only slowly and Wan must drop to 480p (`"clipSize": "480p"`). The
+   RTX 4090 ran out twice on 2026-11-25: always have a second card in mind.
+3. **Create:** the official ComfyUI pod template matching the card's CUDA (CUDA 12.8 `cw3nka7d08` or the
+   current 13.x one), persistent volume **120 GB** at `/workspace`, container disk 40 GB, port `8188/http`
+   only, no SSH or Jupyter. State the hourly price before creating.
+4. **Set up:** copy `pod_setup.sh` into `/workspace` and run it in the background with exec-pod
+   (`nohup sh /workspace/pod_setup.sh > /workspace/setup.log 2>&1 &`). It checks all 12 links first,
+   then downloads ~91 GB in parallel, skipping files already there; wait for `SETUP DONE` in the log.
+5. **Connect:** write `review/pod.json` `{"id": "<podId>", "url": "https://<podId>-8188.proxy.runpod.net"}`,
+   wait for ComfyUI to answer, then `uv run comfy.py` must print no missing nodes or files.
+6. **Run:** `frames.py` and `clips.py` use the pod through `comfy.py`, 2 to 3 shots at a time.
+7. **Stop:** terminate the pod as soon as the clips are approved, and read it back to confirm. If the
+   presenter leaves the review for more than ~30 minutes, **stop** it (the volume stays, compute billing
+   ends) and start it again when they return.
+
+The proxy URL is public while the pod runs, so keep the pod's life short. A network volume would keep
+the 91 GB between videos (no download, small monthly storage fee); that is the next optimisation.
+
+All 12 model links were checked on 2026-11-25 (Comfy-Org repackaged repos and lightx2v Lightning LoRAs):
+Wan set 38 GB, Qwen set 53 GB.
+
 ## Clips (gate 3, then the rest)
 
-Default: **Seedance 1.5 Pro I2V** on a RunPod Public Endpoint, `image` + `last_image`, 720p, 9:16 for
-main shots and the frame's own shape for the hook, duration = the line rounded up, 4 to 12 s. The hook
-came back in 75 s for $0.36 and moved exactly from its start frame to its end frame. The build retimes
-each clip to its line.
+Default: **Wan 2.2 14B first-last-frame** on the pod (`clips.py`, `comfy.wan_flf`): two fp8 experts with
+the 4-step Lightning LoRAs, 16 fps, frames = the line's length rounded to 4n+1 (at most 81, about 5 s),
+720x1280 for main shots and 704x640 for the hook on a 48 GB card. The build retimes each clip to its line.
 
-RunPod marks Seedance 1.5 Pro deprecated (Seedance 2.5 replaces it at about 7x the price), so the
-fallback is kept: `clips.py --engine wan` runs Wan 2.2 14B first-last-frame in ComfyUI on a GPU pod
-(two fp8 experts with the 4-step Lightning LoRAs, `WanFirstLastFrameToVideo`, 16 fps). Managed Wan
-endpoints take a start image only. Pod setup: the official ComfyUI template on a 24 GB card, 38 GB of
-models from `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` and `Comfy-Org/Wan_2.1_ComfyUI_repackaged` (names in
-`clips.py` `MODELS`), so start it only for the clips and terminate it after.
+Fallback: `"clipEngine": "seedance"` uses Seedance 1.5 Pro I2V on a RunPod Public Endpoint (`image` +
+`last_image`, 720p, $0.052 a second, 4 s minimum). The hook came back in 75 s for $0.36 and moved exactly
+from its start frame to its end frame. RunPod marks it deprecated (Seedance 2.5 replaces it at about 7x
+the price). Managed Wan endpoints take a start image only, which is why Wan runs on the pod.
 
 ## Files
 
@@ -150,5 +179,6 @@ storyboard.json     parts, style, shots
 frames/  clips/     generated images and clips
 storyboard.html     gate 2 page;  compare.html when models are compared
 out/                hook.mp4, main.mp4, final.mp4 (+ .loudnorm.mp4 from qc --fix)
-config.json         startModel, endModel, faceCropY, captions (y, hookY, size, maxWords, maxChars)
+config.json         startModel, endModel (pod), clipEngine (wan), clipSize (720p), faceCropY, captions
+review/pod.json     the running pod's id and ComfyUI URL (written by the agent, removed when it ends)
 ```

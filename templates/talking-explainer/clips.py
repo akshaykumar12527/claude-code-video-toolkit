@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
 """Scene clips from each shot's start and end frame.
 
-Engines:
-  seedance (default)  Seedance 1.5 Pro I2V on a RunPod Public Endpoint: image + last_image, 9:16 (hook 1:1),
+Engines (config.json "clipEngine"):
+  wan (default)       Wan 2.2 14B first-last-frame in ComfyUI on the project's GPU pod (comfy.py; the pod's URL
+                      comes from review/pod.json or COMFY_URL). GPU time only: cents a video.
+  seedance            Seedance 1.5 Pro I2V on a RunPod Public Endpoint: image + last_image, 9:16 (hook 1:1),
                       4-12 s, 720p $0.052/s (480p $0.024/s). No pod. Marked deprecated by RunPod (replaced by
                       Seedance 2.5 at ~7x the price), so the Wan path below stays.
-  wan                 Wan 2.2 14B first-last-frame in ComfyUI on a RunPod GPU pod (set COMFY_URL).
 
-    uv run clips.py                         # seedance, every missing clip
+    uv run clips.py                         # every missing clip, on the pod (review/pod.json)
     uv run clips.py --only H1 --seed 7      # redo one shot
-    uv run clips.py --engine wan            # COMFY_URL=https://<podId>-8188.proxy.runpod.net
+    uv run clips.py --engine seedance       # the API instead of the pod
 
 Each storyboard shot becomes one clip that starts on frames/<id>_start.png and ends on
 frames/<id>_end.png. Frame count follows the shot's length (Wan runs at 16 fps and wants 4n+1
-frames), so a 3 s line gets a 3 s clip that actually reaches its end frame.
-
-    COMFY_URL=https://<podId>-8188.proxy.runpod.net uv run clips.py            # all missing clips
-    COMFY_URL=... uv run clips.py --only M03 --seed 7                             # redo one shot
-    COMFY_URL=... COMFY_AUTH=user:pass uv run clips.py                            # basic auth, if the pod has it
-
-The pod needs the models listed in MODELS under ComfyUI/models (see README "Pod setup").
+frames, at most 81), so a 3 s line gets a 3 s clip that actually reaches its end frame.
+The pod's models are set up by pod_setup.sh (README "Pod").
 """
 import argparse
 import base64
@@ -159,13 +155,17 @@ def main() -> None:
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--steps", type=int, default=4)
-    ap.add_argument("--engine", choices=["seedance", "wan"], default="seedance")
+    cfg = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
+    ap.add_argument("--engine", choices=["seedance", "wan"], default=cfg.get("clipEngine", "wan"))
     ap.add_argument("--resolution", choices=["480p", "720p"], default="720p")
     args = ap.parse_args()
-    comfy = None
+    # Wan size: 720p-class on a 48 GB card (default), 480p-class on 24 GB ("clipSize": "480p" in config.json)
+    sizes = {"hook": (704, 640), "main": (720, 1280)} if cfg.get("clipSize", "720p") == "720p" else SIZES
+    pod = None
     if args.engine == "wan":
-        url = os.environ.get("COMFY_URL") or sys.exit("Set COMFY_URL to the pod's ComfyUI URL")
-        comfy = Comfy(url, os.environ.get("COMFY_AUTH"))
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import comfy as comfy_mod
+        pod = comfy_mod.Comfy()  # review/pod.json or COMFY_URL
     sb = json.loads((HERE / "storyboard.json").read_text())
     out = HERE / "clips"
     out.mkdir(exist_ok=True)
@@ -175,7 +175,7 @@ def main() -> None:
         dest = out / f"{s['id']}.mp4"
         if dest.exists() and not args.only:
             continue
-        w, h = SIZES[s["part"]]
+        w, h = sizes[s["part"]]
         length = frames_for(s["end"] - s["start"])
         seed = args.seed if args.seed is not None else 42 + i
         t0 = time.time()
@@ -187,11 +187,10 @@ def main() -> None:
                 print(f"{s['id']}: FAILED {e}", flush=True)
             continue
         try:
-            a = comfy.upload(HERE / "frames" / f"{s['id']}_start.png")
-            b = comfy.upload(HERE / "frames" / f"{s['id']}_end.png")
-            outputs = comfy.run(workflow(f"{s['motion']}. {sb['style']}", a, b, w, h, length, seed, args.steps))
-            item = next(v for o in outputs.values() for k in ("images", "videos", "gifs") for v in o.get(k, []))
-            comfy.fetch(item, dest)
+            a = pod.upload(HERE / "frames" / f"{s['id']}_start.png")
+            b = pod.upload(HERE / "frames" / f"{s['id']}_end.png")
+            outputs = pod.run(comfy_mod.wan_flf(f"{s['motion']}. {sb['style']}", a, b, w, h, length, seed, args.steps))
+            pod.fetch_first(outputs, dest)
             print(f"{s['id']}: {length} frames {w}x{h} in {time.time() - t0:.0f}s", flush=True)
         except Exception as e:  # keep going: one bad shot should not cost the rest
             print(f"{s['id']}: FAILED {e}", flush=True)

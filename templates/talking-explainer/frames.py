@@ -4,8 +4,10 @@
 Start frame: text-to-image (default Seedream 4.0) from the shot's start_prompt + the storyboard style.
 End frame:   an edit of that start frame (default Qwen Image Edit 2511) with the shot's end_edit, so
              subject, light and style carry over and the video model has two frames that belong together.
-             Models are RunPod Public Endpoints via imagegen.py; config.json "startModel"/"endModel" change them
-             ("flux2" uses the toolkit's FLUX.2 endpoint instead). Chosen on a side-by-side test 2026-11-25:
+             Default "pod": Qwen-Image and Qwen-Image-Edit in ComfyUI on the project's GPU pod (comfy.py), the
+             same pod that makes the clips. config.json "startModel"/"endModel" switch to RunPod Public
+             Endpoints via imagegen.py ("seedream", "zimage", "qwen-image" / "qwen-edit", "seedream-edit") or
+             "flux2" for the toolkit's FLUX.2 endpoint. Chosen on a side-by-side test 2026-11-25:
              Seedream read best and Qwen Edit 2511 changed only what was asked.
 
 Run from the project directory (the toolkit's tools/ are found by walking up):
@@ -93,20 +95,49 @@ figcaption{{color:#94A3B8;font-size:13px;text-align:center}} .shot,.motion{{colo
     return out
 
 
+def pod_image(prompt: str, w: int, h: int, out: Path, seed: int, edit_from: Path | None = None) -> None:
+    """Qwen-Image (or Qwen-Image-Edit from `edit_from`) in ComfyUI on the project's pod (comfy.py)."""
+    import comfy
+    c = comfy.Comfy()
+    if edit_from is None:
+        outputs = c.run(comfy.qwen_t2i(prompt, w, h, seed))
+    else:
+        # an edit keeps its input's shape, so bring the reference to this shot's shape first
+        from PIL import Image
+        ref = Image.open(edit_from).convert("RGB")
+        if abs(ref.width / ref.height - w / h) > 0.02:
+            s_ = max(w / ref.width, h / ref.height)
+            ref = ref.resize((round(ref.width * s_), round(ref.height * s_)), Image.LANCZOS)
+            x, y = (ref.width - w) // 2, (ref.height - h) // 2
+            ref = ref.crop((x, y, x + w, y + h))
+        tmp = HERE / "work" / f"_ref_{out.stem}.png"
+        tmp.parent.mkdir(exist_ok=True)
+        ref.save(tmp)
+        outputs = c.run(comfy.qwen_edit(c.upload(tmp), prompt, seed))
+        tmp.unlink(missing_ok=True)
+    c.fetch_first(outputs, out)
+
+
 def make(root: Path, cfg: dict, sb: dict, s: dict, i: int, which: str) -> str:
     frames = HERE / "frames"
     w, h = SIZES[s["part"]]
     seed = 11 + i * 7
     start, end = frames / f"{s['id']}_start.png", frames / f"{s['id']}_end.png"
+    pod_start, pod_end = cfg["startModel"] == "pod", cfg["endModel"] == "pod"
     try:
         if which == "start" and s.get("start_ref"):
             # continuity: build this start frame from another shot's frame (same room, same person)
-            from imagegen import generate
-            generate("seedream-edit", f"{s['start_prompt']}, {sb['style']}", (w, h), start,
-                     inputs=[frames / f"{s['start_ref']}.png"], seed=seed)
+            ref, prompt = frames / f"{s['start_ref']}.png", f"{s['start_prompt']}, {sb['style']}"
+            if pod_end:
+                pod_image(prompt, w, h, start, seed, edit_from=ref)
+            else:
+                from imagegen import generate
+                generate("seedream-edit", prompt, (w, h), start, inputs=[ref], seed=seed)
         elif which == "start":
             prompt = f"{s['start_prompt']}, {sb['style']}"
-            if cfg["startModel"] == "flux2":
+            if pod_start:
+                pod_image(prompt, w, h, start, seed)
+            elif cfg["startModel"] == "flux2":
                 flux(root, cfg["cloud"], start, prompt, w, h, seed)
             else:
                 from imagegen import generate
@@ -115,12 +146,17 @@ def make(root: Path, cfg: dict, sb: dict, s: dict, i: int, which: str) -> str:
             zoom_frame(start, end, s["end_zoom"])
         elif s.get("end_prompt"):
             # the camera goes somewhere new (e.g. inside the TV): the end frame is its own image
-            from imagegen import generate
-            generate(cfg["startModel"] if cfg["startModel"] != "flux2" else "seedream",
-                     f"{s['end_prompt']}, {sb['style']}", (w, h), end, seed=seed)
+            prompt = f"{s['end_prompt']}, {sb['style']}"
+            if pod_start:
+                pod_image(prompt, w, h, end, seed)
+            else:
+                from imagegen import generate
+                generate(cfg["startModel"] if cfg["startModel"] != "flux2" else "seedream", prompt, (w, h), end, seed=seed)
         else:
             prompt = f"{s['end_edit']}. Keep the same scene, camera, framing, lighting and style."
-            if cfg["endModel"] == "flux2":
+            if pod_end:
+                pod_image(prompt, w, h, end, seed, edit_from=start)
+            elif cfg["endModel"] == "flux2":
                 flux(root, cfg["cloud"], end, f"{prompt} {sb['style']}", w, h, seed, edit_from=start)
             else:
                 from imagegen import generate
@@ -136,7 +172,7 @@ def main() -> None:
     ap.add_argument("--ids", nargs="*", help="Shot ids to fill in (existing frames are kept)")
     ap.add_argument("--html", action="store_true", help="Only rebuild storyboard.html")
     args = ap.parse_args()
-    cfg = {"cloud": "runpod", "startModel": "seedream", "endModel": "qwen-edit"}
+    cfg = {"cloud": "runpod", "startModel": "pod", "endModel": "pod"}
     if (HERE / "config.json").exists():
         cfg.update(json.loads((HERE / "config.json").read_text()))
 
