@@ -4,10 +4,10 @@
 Start frame: text-to-image (default Seedream 4.0) from the shot's start_prompt + the storyboard style.
 End frame:   an edit of that start frame (default Qwen Image Edit 2511) with the shot's end_edit, so
              subject, light and style carry over and the video model has two frames that belong together.
-             Default "pod": Qwen-Image and Qwen-Image-Edit in ComfyUI on the project's GPU pod (comfy.py), the
-             same pod that makes the clips. config.json "startModel"/"endModel" switch to RunPod Public
-             Endpoints via imagegen.py ("seedream", "zimage", "qwen-image" / "qwen-edit", "seedream-edit") or
-             "flux2" for the toolkit's FLUX.2 endpoint. Chosen on a side-by-side test 2026-11-25:
+             Default: Seedream 4.0 + Qwen Image Edit 2511 on RunPod Public Endpoints (imagegen.py), the pair the
+             presenter chose on a side-by-side test. Seedream is API-only, so frames stay on the API while the clips
+             run on the pod. config.json "startModel"/"endModel" also take "zimage", "qwen-image", "seedream-edit",
+             "flux2", or "pod" (Qwen-Image / Qwen-Image-Edit in ComfyUI on the pod; untested against Seedream). Chosen on a side-by-side test 2026-11-25:
              Seedream read best and Qwen Edit 2511 changed only what was asked.
 
 Run from the project directory (the toolkit's tools/ are found by walking up):
@@ -172,7 +172,7 @@ def main() -> None:
     ap.add_argument("--ids", nargs="*", help="Shot ids to fill in (existing frames are kept)")
     ap.add_argument("--html", action="store_true", help="Only rebuild storyboard.html")
     args = ap.parse_args()
-    cfg = {"cloud": "runpod", "startModel": "pod", "endModel": "pod"}
+    cfg = {"cloud": "runpod", "startModel": "seedream", "endModel": "qwen-edit"}
     if (HERE / "config.json").exists():
         cfg.update(json.loads((HERE / "config.json").read_text()))
 

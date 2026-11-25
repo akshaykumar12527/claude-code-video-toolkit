@@ -33,7 +33,7 @@ QUEUE = REVIEW / "queue.jsonl"
 STAGES = ["script", "record", "scenes", "frames", "clips", "final", "publish"]
 PUBLISH = HERE / "publish"
 SEEDANCE_PER_S = 0.052  # 720p, RunPod docs 2026-11
-POD_PER_HR, POD_S_PER_CLIP = 0.59, 120  # 48 GB card (A40 secure, 2026-11 read); Wan 4-step at 720p, estimate
+POD_PER_HR, POD_S_PER_CLIP = 0.79, 80  # default card L40S (community, 2026-11 read); Wan 4-step 720p, estimate
 
 
 @contextmanager
@@ -99,8 +99,10 @@ def state() -> dict:
     secs = sum(min(12, max(4, -(-(s["end"] - s["start"]) // 1))) for s in todo)
     cfg = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
     if cfg.get("clipEngine", "wan") == "wan":
-        mins = len(todo) * POD_S_PER_CLIP / 60
-        clip_cost = f"≈ {mins:.0f} min of pod, ${mins / 60 * POD_PER_HR:.2f}"
+        pod = json.loads((REVIEW / "pod.json").read_text()) if (REVIEW / "pod.json").exists() else {}
+        per_hr, per_clip = pod.get("pricePerHr", POD_PER_HR), pod.get("sPerClip", POD_S_PER_CLIP)
+        mins = len(todo) * per_clip / 60 + (0 if pod else 7)  # + model download when no pod is up yet
+        clip_cost = f"≈ {mins:.0f} min of {pod.get('gpu', 'L40S')}, ${mins / 60 * per_hr:.2f}"
     else:
         clip_cost = f"≈ ${secs * SEEDANCE_PER_S:.2f}"
     out = {k: mtime(HERE / "out" / f"{k}.mp4") for k in ("hook", "main", "final", "final.loudnorm")}
@@ -504,9 +506,9 @@ def main() -> None:
         dest.mkdir(parents=True)
         for f in list(tpl.glob("*.py")) + list(tpl.glob("*.sh")):
             shutil.copy(f, dest)
-        # frames and clips on the project's GPU pod; "seedream"/"qwen-edit"/"seedance" switch back to the APIs
-        (dest / "config.json").write_text(json.dumps({"cloud": "runpod", "startModel": "pod", "endModel": "pod",
-                                                      "clipEngine": "wan", "clipSize": "720p"}, indent=2) + "\n")
+        # frames on the API (Seedream + Qwen Edit, the presenter's choice), clips on the GPU pod (Wan)
+        (dest / "config.json").write_text(json.dumps({"cloud": "runpod", "startModel": "seedream", "endModel": "qwen-edit",
+                                                      "clipEngine": "wan", "clipSize": "auto"}, indent=2) + "\n")
         print(dest)
     elif cmd in ("done", "fail", "review"):
         stage, ids = args[1], args[2:]

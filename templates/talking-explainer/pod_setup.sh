@@ -1,8 +1,10 @@
 #!/bin/sh
 # Runs INSIDE the GPU pod (the agent starts it with exec-pod: `nohup sh /workspace/pod_setup.sh > /workspace/setup.log 2>&1 &`).
 # Downloads the models the explainer needs into ComfyUI/models, skipping files already there, in parallel.
+# Default: the Wan clip models only (~38 GB). `sh pod_setup.sh qwen` adds Qwen-Image and Qwen-Image-Edit (~53 GB)
+# for projects with "startModel"/"endModel": "pod".
 # Progress: /workspace/setup.log ; finished when it prints "SETUP DONE" (or "SETUP FAILED <file>").
-# File names must match comfy.py (WAN, QWEN). Sizes: Wan set ~38 GB, Qwen set ~45 GB.
+# File names must match comfy.py (WAN, QWEN). Sizes: Wan set ~38 GB, Qwen set ~53 GB.
 set -u
 M=$(ls -d /workspace/runpod-slim/ComfyUI/models /workspace/ComfyUI/models /ComfyUI/models 2>/dev/null | head -1)
 [ -z "$M" ] && { echo "SETUP FAILED no ComfyUI/models"; exit 1; }
@@ -20,6 +22,8 @@ loras $W22/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
 loras $W22/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
 text_encoders $W21/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
 vae $W21/vae/wan_2.1_vae.safetensors
+"
+QWEN_FILES="
 diffusion_models $QI/diffusion_models/qwen_image_fp8_e4m3fn.safetensors
 diffusion_models $QE/diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors
 text_encoders $QI/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
@@ -27,6 +31,7 @@ vae $QI/vae/qwen_image_vae.safetensors
 loras $QL/Qwen-Image-Lightning-8steps-V1.1.safetensors
 loras $QL/Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-8steps-V1.0-bf16.safetensors
 "
+[ "${1:-}" = "qwen" ] && FILES="$FILES$QWEN_FILES"
 # check every link first, so a renamed file is reported in seconds rather than after 80 GB
 echo "$FILES" | while read -r dir url; do
   [ -z "$dir" ] && continue

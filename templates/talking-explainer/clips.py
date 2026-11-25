@@ -159,8 +159,13 @@ def main() -> None:
     ap.add_argument("--engine", choices=["seedance", "wan"], default=cfg.get("clipEngine", "wan"))
     ap.add_argument("--resolution", choices=["480p", "720p"], default="720p")
     args = ap.parse_args()
-    # Wan size: 720p-class on a 48 GB card (default), 480p-class on 24 GB ("clipSize": "480p" in config.json)
-    sizes = {"hook": (704, 640), "main": (720, 1280)} if cfg.get("clipSize", "720p") == "720p" else SIZES
+    # Wan size: "auto" (default) picks 720p-class on 32 GB or more and 480p-class on 24 GB, from review/pod.json
+    pod_info = json.loads((HERE / "review" / "pod.json").read_text()) if (HERE / "review" / "pod.json").exists() else {}
+    size = cfg.get("clipSize", "auto")
+    if size == "auto":
+        size = "720p" if pod_info.get("vram", 48) >= 32 else "480p"
+    sizes = {"hook": (704, 640), "main": (720, 1280)} if size == "720p" else SIZES
+    timings = []
     pod = None
     if args.engine == "wan":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -191,9 +196,19 @@ def main() -> None:
             b = pod.upload(HERE / "frames" / f"{s['id']}_end.png")
             outputs = pod.run(comfy_mod.wan_flf(f"{s['motion']}. {sb['style']}", a, b, w, h, length, seed, args.steps))
             pod.fetch_first(outputs, dest)
-            print(f"{s['id']}: {length} frames {w}x{h} in {time.time() - t0:.0f}s", flush=True)
+            took = time.time() - t0
+            timings.append(took * 81 / length)  # normalised to a full 81-frame clip
+            print(f"{s['id']}: {length} frames {w}x{h} in {took:.0f}s", flush=True)
         except Exception as e:  # keep going: one bad shot should not cost the rest
             print(f"{s['id']}: FAILED {e}", flush=True)
+    if timings and (HERE / "review" / "pod.json").exists():
+        # the measured speed of this card, so the studio's estimate and the next GPU choice use real numbers
+        pod_info["sPerClip"] = round(sorted(timings)[len(timings) // 2])
+        (HERE / "review" / "pod.json").write_text(json.dumps(pod_info, indent=2))
+        bench = Path(__file__).resolve().parent / "gpu_bench.json"
+        b = json.loads(bench.read_text()) if bench.exists() else {}
+        b[pod_info.get("gpu", "?")] = {"sPerClip": pod_info["sPerClip"], "size": size, "date": time.strftime("%Y-%m-%d")}
+        bench.write_text(json.dumps(b, indent=2))
 
 
 if __name__ == "__main__":

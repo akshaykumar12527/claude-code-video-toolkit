@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""ComfyUI on the project's GPU pod: one client and the three workflows the explainer uses.
+"""ComfyUI on the project's GPU pod: one client and the workflows the explainer uses.
+Clips (Wan) always run here; the Qwen frame workflows are an option ("startModel"/"endModel": "pod").
 
     start frame   Qwen-Image (text to image), 8-step Lightning LoRA
     end frame     Qwen-Image-Edit (edit of the start frame), 8-step Lightning LoRA
@@ -165,18 +166,25 @@ def wan_flf(prompt: str, start: str, end: str, w: int, h: int, length: int, seed
 
 
 def check() -> None:
-    """Print which nodes and model files the pod's ComfyUI is missing (run once after setup)."""
+    """Print which nodes and model files the pod's ComfyUI is missing (run once after setup).
+    The Qwen frame models are checked only when config.json puts frames on the pod."""
+    cfg = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
+    qwen = "pod" in (cfg.get("startModel"), cfg.get("endModel"))
     c = Comfy()
     info = c.s.get(f"{c.url}/object_info", timeout=60).json()
-    nodes = {n["class_type"] for wf in (qwen_t2i("x", 64, 64, 1), qwen_edit("x.png", "x", 1),
-                                         wan_flf("x", "a", "b", 64, 64, 17, 1)) for n in wf.values()}
+    wfs = [wan_flf("x", "a", "b", 64, 64, 17, 1)] + ([qwen_t2i("x", 64, 64, 1), qwen_edit("x.png", "x", 1)] if qwen else [])
+    nodes = {n["class_type"] for wf in wfs for n in wf.values()}
     missing = sorted(n for n in nodes if n not in info)
     print("missing nodes:", missing or "none")
     lists = {"UNETLoader": "unet_name", "LoraLoaderModelOnly": "lora_name", "CLIPLoader": "clip_name", "VAELoader": "vae_name"}
     have = {k: set(info.get(k, {}).get("input", {}).get("required", {}).get(f, [[]])[0]) for k, f in lists.items()}
-    need = {"UNETLoader": [WAN["high"], WAN["low"], QWEN["t2i"], QWEN["edit"]],
-            "LoraLoaderModelOnly": [WAN["lora_high"], WAN["lora_low"], QWEN["lora_t2i"], QWEN["lora_edit"]],
-            "CLIPLoader": [WAN["clip"], QWEN["clip"]], "VAELoader": [WAN["vae"], QWEN["vae"]]}
+    need = {"UNETLoader": [WAN["high"], WAN["low"]], "LoraLoaderModelOnly": [WAN["lora_high"], WAN["lora_low"]],
+            "CLIPLoader": [WAN["clip"]], "VAELoader": [WAN["vae"]]}
+    if qwen:
+        need["UNETLoader"] += [QWEN["t2i"], QWEN["edit"]]
+        need["LoraLoaderModelOnly"] += [QWEN["lora_t2i"], QWEN["lora_edit"]]
+        need["CLIPLoader"].append(QWEN["clip"])
+        need["VAELoader"].append(QWEN["vae"])
     for k, files in need.items():
         for f in files:
             print(("ok      " if f in have[k] else "MISSING ") + f)

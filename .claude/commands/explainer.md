@@ -39,8 +39,8 @@ The page records clicks only; this session does the work by watching the project
 | `script-approve` | Copy `script.md` to `review/script_approved.md` | nothing |
 | `recording-uploaded` | Check the take (9:16, audio, length, face position, level, mirroring); whisper `turbo`, `language="hi"`, `condition_on_previous_text=False` → `work/transcript.json`; split hook / main / CTA from the script; write `storyboard.json` (shots of 4 to 8 s, each with `text`, `see`, prompts, motion; hook end frame from the start frame) | `studio.py stage scenes`, `studio.py done record` |
 | `regen` scenes / frames / clips (id, note) | Rewrite that shot from the note; frames: `frames.py --only <id>`; clips: `clips.py --only <id>`. Look at every result before marking it. | `studio.py done <stage> <id>` |
-| `approve-stage` → frames | **Start the pod** (README "Pod": stock read, 48 GB card, price stated, `pod_setup.sh`, `review/pod.json`, `comfy.py` check). Then fill missing frames 2 to 3 at a time (`review/run_frames.sh`); inspect every end frame (duplicated hands or objects, edits that did nothing) and fix before marking | per shot `done frames <id>` |
-| `approve-stage` → clips | Pod still up (start it again if it was stopped); clips 2 to 3 at a time (`review/run_clip.sh`, Wan on the pod); inspect them | per shot `done clips <id>` |
+| `approve-stage` → frames | Check the RunPod balance; fill missing frames 3 at a time (`review/run_frames.sh`, Seedream + Qwen Edit API); inspect every end frame (duplicated hands or objects, edits that did nothing) and fix before marking. (Only if config puts frames on the pod: start the pod here.) | per shot `done frames <id>` |
+| `approve-stage` → clips | **Start the pod** (README "Pod": stock read, card by cost per clip (L40S, RTX 6000 Ada, RTX 5090, A40, RTX 4090 at 480p; `gpu_bench.json` has measured speeds), price stated, `pod_setup.sh`, `review/pod.json`, `uv run comfy.py` check); clips 2 to 3 at a time (`review/run_clip.sh`, Wan on the pod); inspect them | per shot `done clips <id>` |
 | `approve-stage` → final | **Terminate the pod** and read it back; remove `review/pod.json`. Then `build.py` (no burned-in captions), `tools/qc.py --render … --fix` on final, hook and main | `studio.py done final` |
 | `final-note` | Fix what the note asks, rebuild | `studio.py done final` |
 | `final-approve` | Write `publish/meta.json` (English title; one `post`: English caption, keywords, hashtags with blank lines between) and `publish/thumbs.json` (3 covers, 2-line hook, *accent* word); `publish.py thumbs`; copy-lint the text | `studio.py done publish` |
@@ -50,9 +50,9 @@ The page records clicks only; this session does the work by watching the project
 
 ## Rules
 
-- Nothing paid starts without the presenter's approval in the page. Frames and clips run on one pod: start it at
-  ① → ②, stop it if the presenter is away more than ~30 min, terminate it when the clips are approved. Never leave a
-  pod running at the end of a session (`/explainer stop` terminates it too).
+- Nothing paid starts without the presenter's approval in the page. Frames use the API (Seedream + Qwen Edit, his
+  choice). Clips run on a pod: start it at ② → ③, stop it if the presenter is away more than ~30 min, terminate it when
+  the clips are approved. Never leave a pod running at the end of a session (`/explainer stop` terminates it too).
 - No LLM calls from the page or scripts: this session does the writing.
 - No captions burned into the video. Publish text in English; scripts in Roman Hinglish.
 - After a template change, copy the scripts into the open project and restart its server.
